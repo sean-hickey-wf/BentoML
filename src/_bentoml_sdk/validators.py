@@ -28,6 +28,7 @@ if t.TYPE_CHECKING:
     import torch
     from pydantic import GetCoreSchemaHandler
     from pydantic import GetJsonSchemaHandler
+    from pydantic import BaseModel
     from typing_extensions import Literal
 
     TensorType = t.Union[np.ndarray[t.Any, t.Any], tf.Tensor, torch.Tensor]
@@ -282,6 +283,12 @@ class DataframeSchema:
         default=None,
         converter=lambda x: tuple(x) if x else None,
     )
+    model: type["BaseModel"] | None = attrs.field(
+        default=None,
+        converter=lambda x: x if x is None or (hasattr(x, '__bases__') and any(
+            base.__name__ == 'BaseModel' for base in x.__mro__
+        )) else None,
+    )
 
     def __get_pydantic_json_schema__(
         self, schema: core_schema.CoreSchema, handler: GetJsonSchemaHandler
@@ -298,24 +305,70 @@ class DataframeSchema:
                 )
             )
         else:
-            if self.orient == "records":
-                value.update(
-                    {
+            # Serialization mode - generate OpenAPI-friendly schema
+            if self.model is not None:
+                # Use Pydantic model for rich schema generation
+                model_schema = self.model.model_json_schema()
+
+                if self.orient == "records":
+                    value.update({
                         "type": "array",
-                        "items": {"type": "object"},
-                    }
-                )
-            elif self.orient == "columns":
-                value.update(
-                    {
+                        "items": {
+                            "type": "object",
+                            "properties": model_schema.get("properties", {}),
+                            "required": model_schema.get("required", []),
+                            "description": f"DataFrame record based on {self.model.__name__}"
+                        },
+                        "description": f"DataFrame in {self.orient} format with {self.model.__name__} schema"
+                    })
+                elif self.orient == "columns":
+                    # Generate column-oriented schema from Pydantic model
+                    properties = {}
+                    for field_name, field_info in model_schema.get("properties", {}).items():
+                        properties[field_name] = {
+                            "type": "array",
+                            "items": field_info,
+                            "description": f"Array of {field_info.get('description', field_name)}"
+                        }
+
+                    value.update({
                         "type": "object",
-                        "additionalProperties": {"type": "array"},
-                    }
-                )
+                        "properties": properties,
+                        "description": f"DataFrame in {self.orient} format with {self.model.__name__} schema"
+                    })
+                else:
+                    raise ValueError("Only 'records' and 'columns' are supported for orient")
             else:
-                raise ValueError(
-                    "Only 'records' and 'columns' are supported for orient"
-                )
+                # Fallback to basic schema when no model is provided
+                if self.orient == "records":
+                    properties = {}
+                    if self.columns:
+                        properties = {col: {"type": "string"} for col in self.columns}
+
+                    value.update({
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": properties,
+                            "required": list(properties.keys()) if properties else []
+                        },
+                        "description": f"DataFrame in {self.orient} format"
+                    })
+                elif self.orient == "columns":
+                    properties = {}
+                    if self.columns:
+                        properties = {
+                            col: {"type": "array", "items": {"type": "string"}}
+                            for col in self.columns
+                        }
+
+                    value.update({
+                        "type": "object",
+                        "properties": properties,
+                        "description": f"DataFrame in {self.orient} format"
+                    })
+                else:
+                    raise ValueError("Only 'records' and 'columns' are supported for orient")
         return value
 
     def __get_pydantic_core_schema__(

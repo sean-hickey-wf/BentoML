@@ -115,7 +115,8 @@ class GenericSerde:
             return child_schema.validate(obj)
         if schema.get("type") == "dataframe":
             child_schema = DataframeSchema(
-                orient=schema.get("orient", "records"), columns=schema.get("columns")
+                orient=schema.get("orient", "records"),
+                columns=schema.get("columns")
             )
             return child_schema.validate(obj)
         if schema.get("type") == "array" and "items" in schema:
